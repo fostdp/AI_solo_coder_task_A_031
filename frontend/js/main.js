@@ -2,6 +2,7 @@ class SewagePlantApp {
     constructor() {
         this.processLayout = null;
         this.biologicalProfile = null;
+        this.sensorTrend = null;
         this.websocket = null;
         this.kpiDashboard = null;
         this.activeTab = 'layout';
@@ -22,7 +23,7 @@ class SewagePlantApp {
 
     setupTabs() {
         const tabs = document.querySelectorAll('.tab-btn');
-        const panels = document.querySelectorAll('.tab-panel');
+        const panels = document.querySelectorAll('.tab-content');
 
         tabs.forEach(tab => {
             tab.addEventListener('click', () => {
@@ -32,7 +33,7 @@ class SewagePlantApp {
                 panels.forEach(p => p.classList.remove('active'));
                 
                 tab.classList.add('active');
-                document.getElementById(`tab-${tabId}`).classList.add('active');
+                document.getElementById(tabId).classList.add('active');
                 
                 this.activeTab = tabId;
                 this.onTabChange(tabId);
@@ -95,8 +96,13 @@ class SewagePlantApp {
     }
 
     setupCanvas() {
-        this.processLayout = new ProcessLayout('processCanvas');
+        this.processLayout = new ProcessLayout('layoutCanvas');
         this.biologicalProfile = new BiologicalProfile('profileCanvas');
+        this.sensorTrend = new SensorTrend('trendCanvas', {
+            label: '参数趋势',
+            unit: '',
+            color: CONFIG.COLORS.primary
+        });
     }
 
     setupKPIDashboard() {
@@ -490,6 +496,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (window.app.biologicalProfile) {
             window.app.biologicalProfile.resize();
+        }
+        if (window.app.sensorTrend) {
+            window.app.sensorTrend.resize();
         }
     });
 });

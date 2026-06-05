@@ -200,29 +200,7 @@ class ProcessLayout {
         
         modal.classList.add('active');
         
-        await this.drawSensorTrend(sensor.sensor_id);
-    }
-    
-    async drawSensorTrend(sensorId) {
-        try {
-            const response = await fetch(`${CONFIG.API_BASE_URL}/sensors/${sensorId}/trend?hours=6`);
-            const data = await response.json();
-            
-            const canvas = document.getElementById('modalTrendCanvas');
-            const ctx = canvas.getContext('2d');
-            
-            const container = canvas.parentElement;
-            canvas.width = container.clientWidth;
-            canvas.height = 300;
-            
-            drawLineChart(ctx, canvas, data.timestamps, data.values, {
-                color: CONFIG.SENSOR_TYPES[sensorId.split('-')[0]]?.color || CONFIG.COLORS.primary,
-                label: CONFIG.SENSOR_TYPES[sensorId.split('-')[0]]?.name || '数值',
-                unit: CONFIG.SENSOR_TYPES[sensorId.split('-')[0]]?.unit || ''
-            });
-        } catch (error) {
-            console.error('Failed to load sensor trend:', error);
-        }
+        await drawSensorTrend(sensor.sensor_id);
     }
     
     getDeviationLevel(deviation) {

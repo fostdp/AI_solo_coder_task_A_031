@@ -24,34 +24,80 @@ websocket:
   port: 8081
   path: /ws
 
+sensor_collector:
+  offline_timeout: 300s
+  max_deviation_ratio: 10.0
+
 control:
   aeration:
-    do_setpoint: 2.0
-    do_min: 1.5
-    do_max: 2.5
-    nh3_setpoint: 1.5
-    nh3_min: 1.0
-    nh3_max: 2.0
+    target_nh3: 1.5
+    control_interval: 10s
+    zones:
+      - zone_id: aerobic1
+        do_setpoint: 2.0
+        do_min: 1.5
+        do_max: 2.5
+        nh3_setpoint: 1.5
+        nh3_min: 1.0
+        nh3_max: 2.0
+        min_air_flow: 500
+        max_air_flow: 5000
+      - zone_id: aerobic2
+        do_setpoint: 2.0
+        do_min: 1.5
+        do_max: 2.5
+        nh3_setpoint: 1.5
+        nh3_min: 1.0
+        nh3_max: 2.0
+        min_air_flow: 500
+        max_air_flow: 5000
+      - zone_id: aerobic3
+        do_setpoint: 2.0
+        do_min: 1.5
+        do_max: 2.5
+        nh3_setpoint: 1.5
+        nh3_min: 1.0
+        nh3_max: 2.0
+        min_air_flow: 500
+        max_air_flow: 5000
     pid:
       kp: 0.8
       ki: 0.3
       kd: 0.1
+      integral_separation_threshold: 0.5
+      anti_windup_gain: 0.5
     feedforward:
       nh3_gain: 0.5
       flow_gain: 0.3
+      nh3_base: 1.5
+      flow_base: 300000
   carbon:
+    no3_setpoint: 10.0
     tn_setpoint: 15.0
     cod_n_ratio: 5.0
     max_dosage: 50.0
+    min_dosage: 0.0
+    carbon_source_type: acetate
+    carbon_source_concentration: 500000.0
+    cod_change_threshold: 0.2
+    event_driven_enabled: true
+    target_tn_removal_rate: 80.0
+    max_carbon_per_ton: 0.5
+    efficiency_weight: 0.7
+    cost_weight: 0.3
+    control_interval: 10s
 
 alert:
-  level1:
+  thresholds:
     nh3_threshold: 5.0
     tn_threshold: 15.0
-    duration: 1800
-  level2:
-    do_offline_timeout: 300
-    fan_fault_timeout: 60
+    duration: 1800s
+    offline_timeout: 300s
+    fan_fault_timeout: 60s
+  sms_fallback_enabled: true
+  sms_fallback_level: 1
+  buffer_max_size: 100
+  check_interval: 30s
   sms:
     enabled: true
     api_url: https://sms.example.com/send
