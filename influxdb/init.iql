@@ -1,0 +1,43 @@
+CREATE DATABASE sewage_plant WITH DURATION 365d REPLICATION 1 SHARD DURATION 7d NAME "autogen"
+
+CREATE RETENTION POLICY "raw_data" ON "sewage_plant" DURATION 30d REPLICATION 1 SHARD DURATION 1d
+CREATE RETENTION POLICY "hourly_data" ON "sewage_plant" DURATION 180d REPLICATION 1 SHARD DURATION 7d
+CREATE RETENTION POLICY "daily_data" ON "sewage_plant" DURATION 365d REPLICATION 1 SHARD DURATION 30d
+
+CREATE CONTINUOUS QUERY "cq_hourly_sensor" ON "sewage_plant"
+BEGIN
+  SELECT mean(value) as value, max(value) as max_value, min(value) as min_value
+  INTO "hourly_data"."sensor_data_hourly"
+  FROM "raw_data"."sensor_data"
+  GROUP BY time(1h), sensor_id, type, location
+END
+
+CREATE CONTINUOUS QUERY "cq_daily_sensor" ON "sewage_plant"
+BEGIN
+  SELECT mean(value) as value, max(value) as max_value, min(value) as min_value
+  INTO "daily_data"."sensor_data_daily"
+  FROM "raw_data"."sensor_data"
+  GROUP BY time(1d), sensor_id, type, location
+END
+
+CREATE CONTINUOUS QUERY "cq_hourly_energy" ON "sewage_plant"
+BEGIN
+  SELECT mean(value) as value, sum(value) as total
+  INTO "hourly_data"."energy_data_hourly"
+  FROM "raw_data"."energy_data"
+  GROUP BY time(1h), type
+END
+
+CREATE CONTINUOUS QUERY "cq_daily_energy" ON "sewage_plant"
+BEGIN
+  SELECT mean(value) as value, sum(value) as total
+  INTO "daily_data"."energy_data_daily"
+  FROM "raw_data"."energy_data"
+  GROUP BY time(1d), type
+END
+
+CREATE USER "admin" WITH PASSWORD 'admin123' WITH ALL PRIVILEGES
+CREATE USER "reader" WITH PASSWORD 'reader123'
+GRANT READ ON sewage_plant TO "reader"
+CREATE USER "writer" WITH PASSWORD 'writer123'
+GRANT WRITE ON sewage_plant TO "writer"

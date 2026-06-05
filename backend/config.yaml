@@ -1,0 +1,77 @@
+server:
+  port: 8080
+  mode: debug
+
+influxdb:
+  addr: http://localhost:8086
+  username: admin
+  password: admin123
+  database: sewage_plant
+  retention_policy: raw_data
+  timeout: 10s
+
+mqtt:
+  broker: tcp://localhost:1883
+  client_id: sewage_server
+  username: admin
+  password: admin123
+  topics:
+    sensor_data: sensor/+/data
+    plc_status: plc/+/status
+    control_command: control/command
+
+websocket:
+  port: 8081
+  path: /ws
+
+control:
+  aeration:
+    do_setpoint: 2.0
+    do_min: 1.5
+    do_max: 2.5
+    nh3_setpoint: 1.5
+    nh3_min: 1.0
+    nh3_max: 2.0
+    pid:
+      kp: 0.8
+      ki: 0.3
+      kd: 0.1
+    feedforward:
+      nh3_gain: 0.5
+      flow_gain: 0.3
+  carbon:
+    tn_setpoint: 15.0
+    cod_n_ratio: 5.0
+    max_dosage: 50.0
+
+alert:
+  level1:
+    nh3_threshold: 5.0
+    tn_threshold: 15.0
+    duration: 1800
+  level2:
+    do_offline_timeout: 300
+    fan_fault_timeout: 60
+  sms:
+    enabled: true
+    api_url: https://sms.example.com/send
+    api_key: your_sms_api_key
+    recipients:
+      - "13800138000"
+      - "13900139000"
+
+sensors:
+  do:
+    count: 30
+    locations:
+      - anaerobic
+      - anoxic
+      - aerobic1
+      - aerobic2
+      - aerobic3
+  nh3:
+    count: 20
+  no3:
+    count: 15
+  po4:
+    count: 10
