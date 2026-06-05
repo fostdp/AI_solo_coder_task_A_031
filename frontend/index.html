@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>城市污水处理厂精确曝气与脱氮除磷优化系统</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <h1>城市污水处理厂精确曝气与脱氮除磷优化系统</h1>
+            <div class="status-bar">
+                <span class="status-item">
+                    <span class="label">系统状态:</span>
+                    <span class="value running">运行中</span>
+                </span>
+                <span class="status-item">
+                    <span class="label">日处理量:</span>
+                    <span class="value">30万吨</span>
+                </span>
+                <span class="status-item">
+                    <span class="label">在线传感器:</span>
+                    <span id="online-count" class="value">--</span>
+                </span>
+                <span class="status-item">
+                    <span class="label">当前告警:</span>
+                    <span id="alarm-count" class="value alarm">0</span>
+                </span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <aside class="sidebar">
+                <div class="kpi-panel">
+                    <h3>关键运行指标</h3>
+                    <div class="kpi-cards">
+                        <div class="kpi-card energy">
+                            <div class="kpi-icon">⚡</div>
+                            <div class="kpi-info">
+                                <div class="kpi-label">吨水电耗</div>
+                                <div class="kpi-value"><span id="kpi-energy">--</span> kWh/m³</div>
+                                <div class="kpi-trend" id="trend-energy">--</div>
+                            </div>
+                        </div>
+                        <div class="kpi-card carbon">
+                            <div class="kpi-icon">🧪</div>
+                            <div class="kpi-info">
+                                <div class="kpi-label">碳源单耗</div>
+                                <div class="kpi-value"><span id="kpi-carbon">--</span> kg/m³</div>
+                                <div class="kpi-trend" id="trend-carbon">--</div>
+                            </div>
+                        </div>
+                        <div class="kpi-card removal">
+                            <div class="kpi-icon">📊</div>
+                            <div class="kpi-info">
+                                <div class="kpi-label">综合去除率</div>
+                                <div class="kpi-value"><span id="kpi-removal">--</span> %</div>
+                                <div class="kpi-trend" id="trend-removal">--</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="kpi-charts">
+                    <h3>指标趋势 (7天)</h3>
+                    <div class="chart-container">
+                        <canvas id="kpi-energy-chart" width="300" height="100"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="kpi-carbon-chart" width="300" height="100"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="kpi-removal-chart" width="300" height="100"></canvas>
+                    </div>
+                </div>
+
+                <div class="alarm-panel">
+                    <h3>实时告警</h3>
+                    <div class="alarm-list" id="alarm-list">
+                        <div class="no-alarm">暂无告警</div>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="main-panel">
+                <div class="view-tabs">
+                    <button class="tab-btn active" data-view="flow">工艺流程图</button>
+                    <button class="tab-btn" data-view="section">生化池剖面图</button>
+                </div>
+
+                <div class="canvas-container">
+                    <canvas id="main-canvas" width="900" height="500"></canvas>
+                </div>
+
+                <div class="control-panel">
+                    <div class="control-section">
+                        <h4>曝气控制</h4>
+                        <div class="control-values">
+                            <div class="control-item">
+                                <span class="label">A段曝气量:</span>
+                                <span class="value" id="aeration-a">--%</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">B段曝气量:</span>
+                                <span class="value" id="aeration-b">--%</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">C段曝气量:</span>
+                                <span class="value" id="aeration-c">--%</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">出水氨氮:</span>
+                                <span class="value" id="eff-nh3">-- mg/L</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">出水DO:</span>
+                                <span class="value" id="eff-do">-- mg/L</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-section">
+                        <h4>碳源投加</h4>
+                        <div class="control-values">
+                            <div class="control-item">
+                                <span class="label">投加量:</span>
+                                <span class="value" id="carbon-dosage">-- L/h</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">进水COD:</span>
+                                <span class="value" id="influent-cod">-- mg/L</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">缺氧池NO3:</span>
+                                <span class="value" id="anoxic-no3">-- mg/L</span>
+                            </div>
+                            <div class="control-item">
+                                <span class="label">TN去除率:</span>
+                                <span class="value" id="tn-removal">--%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="legend">
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background: #4CAF50;"></span>
+                        <span>正常 (偏差<10%)</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background: #ff9800;"></span>
+                        <span>警告 (偏差10%-20%)</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background: #f44336;"></span>
+                        <span>告警 (偏差>20%)</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-dot" style="background: #9e9e9e;"></span>
+                        <span>离线</span>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="sensor-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modal-title">传感器详情</h3>
+                <button class="close-btn" id="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="sensor-info">
+                    <div class="info-row">
+                        <span class="label">传感器ID:</span>
+                        <span id="modal-sensor-id">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">传感器类型:</span>
+                        <span id="modal-sensor-type">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">所属工艺段:</span>
+                        <span id="modal-sensor-stage">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">当前值:</span>
+                        <span id="modal-sensor-value">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">设定范围:</span>
+                        <span id="modal-sensor-range">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">偏差:</span>
+                        <span id="modal-sensor-deviation">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">状态:</span>
+                        <span id="modal-sensor-status">--</span>
+                    </div>
+                </div>
+                <div class="trend-chart-container">
+                    <h4>近6小时趋势</h4>
+                    <canvas id="trend-chart" width="600" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
