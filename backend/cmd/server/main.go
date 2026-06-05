@@ -196,6 +196,57 @@ func (s *Server) handleSensorData(data *models.SensorData) {
 	s.alertManager.UpdateSensorData(data.SensorID, data.Value, data.Type, data.Timestamp)
 
 	s.wsServer.BroadcastSensorData(data)
+
+	if data.Type == models.SensorTypeCOD && s.sensorBelongsToLocation(data.SensorID, "influent") {
+		go s.checkAndTriggerCarbonOptimization(data.Value)
+	}
+}
+
+func (s *Server) checkAndTriggerCarbonOptimization(codValue float64) {
+	no3Value := s.getAverageSensorValue(models.SensorTypeNO3, "anoxic")
+	if no3Value <= 0 {
+		no3Value = 8.0
+	}
+
+	tnInfluent := 40.0
+	tnEffluent := no3Value + 2.0
+
+	triggered := s.carbonCtrl.OnCODUpdate(codValue, no3Value, tnInfluent, tnEffluent, s.flowRate)
+	if triggered {
+		optimizedDosage := s.carbonOptimizer.Optimize(s.carbonCtrl, s.flowRate)
+		if optimizedDosage != s.carbonCtrl.DosageSetpoint {
+			log.Printf("[CARBON] Event-driven optimization adjusted dosage: %.3f -> %.3f",
+				s.carbonCtrl.DosageSetpoint, optimizedDosage)
+			s.carbonCtrl.SetDosageLimits(s.carbonCtrl.MinDosage, s.carbonCtrl.MaxDosage)
+		}
+
+		cmdData := s.carbonCtrl.GetControlCommand()
+		controlCmd := &models.ControlCommand{
+			CommandID:  fmt.Sprintf("cmd_%d", time.Now().UnixNano()),
+			TargetType: cmdData["target_type"].(string),
+			TargetID:   cmdData["target_id"].(string),
+			Action:     cmdData["action"].(string),
+			Value:      cmdData["value"].(float64),
+			Unit:       cmdData["unit"].(string),
+			Timestamp:  time.Now(),
+			Source:     "carbon_control_event_driven",
+		}
+
+		if s.mqttClient != nil && s.mqttClient.IsConnected() {
+			if err := s.mqttClient.PublishControlCommand(controlCmd); err != nil {
+				log.Printf("Failed to publish event-driven carbon control command: %v", err)
+			}
+		}
+
+		if s.influxClient != nil {
+			if err := s.influxClient.WriteControlCommand(controlCmd); err != nil {
+				log.Printf("Failed to write event-driven carbon control command: %v", err)
+			}
+		}
+
+		s.wsServer.BroadcastControlCommand(controlCmd)
+		s.wsServer.BroadcastCarbonControl(s.carbonCtrl.GetStatus())
+	}
 }
 
 func (s *Server) handlePLCStatus(status *models.PLCStatus) {

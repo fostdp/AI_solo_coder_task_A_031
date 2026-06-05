@@ -57,16 +57,18 @@ type PLCStatus struct {
 }
 
 type Alert struct {
-	AlertID     string    `json:"alert_id"`
-	Level       int       `json:"level"`
-	Type        string    `json:"type"`
-	Title       string    `json:"title"`
-	Message     string    `json:"message"`
-	SensorID    string    `json:"sensor_id"`
-	Value       float64   `json:"value"`
-	Threshold   float64   `json:"threshold"`
-	Timestamp   time.Time `json:"timestamp"`
-	Acknowledged bool     `json:"acknowledged"`
+	AlertID          string    `json:"alert_id"`
+	Level            int       `json:"level"`
+	Type             string    `json:"type"`
+	Title            string    `json:"title"`
+	Message          string    `json:"message"`
+	SensorID         string    `json:"sensor_id"`
+	Value            float64   `json:"value"`
+	Threshold        float64   `json:"threshold"`
+	Timestamp        time.Time `json:"timestamp"`
+	Acknowledged     bool      `json:"acknowledged"`
+	Delivered        bool      `json:"delivered"`
+	DeliveryChannels []string  `json:"delivery_channels"`
 }
 
 type AerationControl struct {

@@ -8,34 +8,54 @@ import (
 )
 
 type PIDController struct {
-	Kp         float64
-	Ki         float64
-	Kd         float64
-	Setpoint   float64
-	MinOutput  float64
-	MaxOutput  float64
-	Integral   float64
-	LastError  float64
-	LastTime   time.Time
-	Derivative float64
-	mu         sync.Mutex
+	Kp                        float64
+	Ki                        float64
+	Kd                        float64
+	Setpoint                  float64
+	MinOutput                 float64
+	MaxOutput                 float64
+	Integral                  float64
+	LastError                 float64
+	LastTime                  time.Time
+	Derivative                float64
+	LastOutput                float64
+	IntegralSeparationThreshold float64
+	AntiWindupGain            float64
+	OutputSaturated           bool
+	LastSaturatedTime         time.Time
+	mu                        sync.Mutex
 }
 
 func NewPIDController(kp, ki, kd, setpoint, minOutput, maxOutput float64) *PIDController {
 	return &PIDController{
-		Kp:        kp,
-		Ki:        ki,
-		Kd:        kd,
-		Setpoint:  setpoint,
-		MinOutput: minOutput,
-		MaxOutput: maxOutput,
-		LastTime:  time.Now(),
+		Kp:                         kp,
+		Ki:                         ki,
+		Kd:                         kd,
+		Setpoint:                   setpoint,
+		MinOutput:                  minOutput,
+		MaxOutput:                  maxOutput,
+		LastTime:                   time.Now(),
+		IntegralSeparationThreshold: 0.5,
+		AntiWindupGain:             0.5,
+		OutputSaturated:            false,
 	}
 }
 
 func (pid *PIDController) Update(actual float64, now time.Time) float64 {
 	pid.mu.Lock()
 	defer pid.mu.Unlock()
+
+	if !pid.isDataValid(actual) {
+		log.Printf("[PID] Invalid sensor data: %.2f, skipping integration", actual)
+		pid.resetIntegral()
+		pid.LastError = 0
+		pid.LastTime = now
+		pid.LastOutput = pid.LastOutput
+		if pid.LastOutput == 0 {
+			pid.LastOutput = (pid.MinOutput + pid.MaxOutput) / 2
+		}
+		return pid.LastOutput
+	}
 
 	error := pid.Setpoint - actual
 	dt := now.Sub(pid.LastTime).Seconds()
@@ -44,20 +64,70 @@ func (pid *PIDController) Update(actual float64, now time.Time) float64 {
 		dt = 0.001
 	}
 
-	pid.Integral += error * dt
-	pid.Integral = clamp(pid.Integral, pid.MinOutput/pid.Ki, pid.MaxOutput/pid.Ki)
+	absError := math.Abs(error)
+	useIntegral := true
+	if absError > pid.IntegralSeparationThreshold {
+		useIntegral = false
+		log.Printf("[PID] Integral separation active: error=%.3f, threshold=%.3f, stopping integration",
+			error, pid.IntegralSeparationThreshold)
+	}
+
+	if useIntegral {
+		pid.Integral += error * dt
+	}
 
 	if !pid.LastTime.IsZero() {
 		pid.Derivative = (error - pid.LastError) / dt
 	}
 
-	output := pid.Kp*error + pid.Ki*pid.Integral + pid.Kd*pid.Derivative
-	output = clamp(output, pid.MinOutput, pid.MaxOutput)
+	pidOutput := pid.Kp * error
+	if useIntegral {
+		pidOutput += pid.Ki * pid.Integral
+	}
+	pidOutput += pid.Kd * pid.Derivative
+
+	preSatOutput := pidOutput
+	output := clamp(pidOutput, pid.MinOutput, pid.MaxOutput)
+
+	pid.OutputSaturated = math.Abs(preSatOutput-output) > 0.001
+	if pid.OutputSaturated {
+		pid.LastSaturatedTime = now
+		log.Printf("[PID] Output saturated: pre_sat=%.3f, clamped=%.3f, applying anti-windup",
+			preSatOutput, output)
+
+		antiWindup := (preSatOutput - output) * pid.AntiWindupGain * dt
+		if useIntegral {
+			pid.Integral -= antiWindup
+			log.Printf("[PID] Anti-windup correction: %.6f, new integral=%.6f", antiWindup, pid.Integral)
+		}
+	}
+
+	pid.Integral = clamp(pid.Integral, pid.MinOutput/pid.Ki, pid.MaxOutput/pid.Ki)
 
 	pid.LastError = error
 	pid.LastTime = now
+	pid.LastOutput = output
 
 	return output
+}
+
+func (pid *PIDController) isDataValid(actual float64) bool {
+	if math.IsNaN(actual) || math.IsInf(actual, 0) {
+		return false
+	}
+	if actual < 0 {
+		return false
+	}
+	if actual > pid.Setpoint*10 {
+		return false
+	}
+	return true
+}
+
+func (pid *PIDController) resetIntegral() {
+	pid.Integral = 0
+	pid.OutputSaturated = false
+	log.Printf("[PID] Integral reset")
 }
 
 func (pid *PIDController) Reset() {
@@ -66,6 +136,9 @@ func (pid *PIDController) Reset() {
 	pid.Integral = 0
 	pid.LastError = 0
 	pid.Derivative = 0
+	pid.LastOutput = 0
+	pid.OutputSaturated = false
+	pid.LastSaturatedTime = time.Time{}
 	pid.LastTime = time.Now()
 }
 
@@ -73,6 +146,37 @@ func (pid *PIDController) SetSetpoint(sp float64) {
 	pid.mu.Lock()
 	defer pid.mu.Unlock()
 	pid.Setpoint = sp
+}
+
+func (pid *PIDController) SetIntegralSeparationThreshold(threshold float64) {
+	pid.mu.Lock()
+	defer pid.mu.Unlock()
+	pid.IntegralSeparationThreshold = threshold
+	log.Printf("[PID] Integral separation threshold set to %.3f", threshold)
+}
+
+func (pid *PIDController) SetAntiWindupGain(gain float64) {
+	pid.mu.Lock()
+	defer pid.mu.Unlock()
+	pid.AntiWindupGain = gain
+	log.Printf("[PID] Anti-windup gain set to %.3f", gain)
+}
+
+func (pid *PIDController) GetStatus() map[string]interface{} {
+	pid.mu.Lock()
+	defer pid.mu.Unlock()
+	return map[string]interface{}{
+		"kp":                          pid.Kp,
+		"ki":                          pid.Ki,
+		"kd":                          pid.Kd,
+		"setpoint":                    pid.Setpoint,
+		"integral":                    pid.Integral,
+		"derivative":                  pid.Derivative,
+		"last_error":                  pid.LastError,
+		"last_output":                 pid.LastOutput,
+		"output_saturated":            pid.OutputSaturated,
+		"integral_separation_active":  math.Abs(pid.LastError) > pid.IntegralSeparationThreshold,
+	}
 }
 
 type FeedforwardController struct {
@@ -373,6 +477,7 @@ func (acs *AerationControlSystem) GetStatus() map[string]interface{} {
 
 	zones := make(map[string]interface{})
 	for id, zone := range acs.Zones {
+		pidStatus := zone.PID.GetStatus()
 		zones[id] = map[string]interface{}{
 			"do_actual":         zone.DOActual,
 			"do_setpoint":       zone.DOSetpoint,
@@ -383,6 +488,7 @@ func (acs *AerationControlSystem) GetStatus() map[string]interface{} {
 			"pid_output":        zone.PIDOutput,
 			"ff_output":         zone.FFOutput,
 			"total_output":      zone.TotalOutput,
+			"pid_status":        pidStatus,
 		}
 	}
 	status["zones"] = zones

@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -12,12 +13,14 @@ import (
 )
 
 type Server struct {
-	upgrader     websocket.Upgrader
-	clients      map[*websocket.Conn]bool
-	broadcast    chan interface{}
-	mu           sync.RWMutex
-	alertChannel chan *models.Alert
-	dataChannel  chan interface{}
+	upgrader      websocket.Upgrader
+	clients       map[*websocket.Conn]bool
+	broadcast     chan interface{}
+	mu            sync.RWMutex
+	alertChannel  chan *models.Alert
+	dataChannel   chan interface{}
+	statusChange  func(connected bool, clientCount int)
+	lastStatus    bool
 }
 
 type Message struct {
@@ -39,7 +42,41 @@ func NewServer() *Server {
 		broadcast:    make(chan interface{}, 100),
 		alertChannel: make(chan *models.Alert, 100),
 		dataChannel:  make(chan interface{}, 100),
+		lastStatus:   false,
 	}
+}
+
+func (s *Server) SetStatusChangeCallback(callback func(connected bool, clientCount int)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusChange = callback
+	log.Printf("[WS] Status change callback registered")
+}
+
+func (s *Server) notifyStatusChange() {
+	s.mu.RLock()
+	callback := s.statusChange
+	clientCount := len(s.clients)
+	connected := clientCount > 0
+	statusChanged := connected != s.lastStatus
+	s.mu.RUnlock()
+
+	if statusChanged {
+		s.mu.Lock()
+		s.lastStatus = connected
+		s.mu.Unlock()
+
+		if callback != nil {
+			log.Printf("[WS] Status changed: connected=%v, clients=%d, notifying callback", connected, clientCount)
+			callback(connected, clientCount)
+		}
+	}
+}
+
+func (s *Server) HasClients() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.clients) > 0
 }
 
 func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +92,8 @@ func (s *Server) HandleConnection(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("WebSocket client connected: %s", conn.RemoteAddr())
 
+	go s.notifyStatusChange()
+
 	go s.handleClient(conn)
 
 	s.sendInitialData(conn)
@@ -67,6 +106,7 @@ func (s *Server) handleClient(conn *websocket.Conn) {
 		s.mu.Unlock()
 		conn.Close()
 		log.Printf("WebSocket client disconnected: %s", conn.RemoteAddr())
+		go s.notifyStatusChange()
 	}()
 
 	for {
@@ -123,8 +163,43 @@ func (s *Server) Broadcast(msgType string, data interface{}) {
 	}
 }
 
-func (s *Server) BroadcastAlert(alert *models.Alert) {
-	s.Broadcast("alert", alert)
+func (s *Server) BroadcastAlert(alert *models.Alert) error {
+	return s.BroadcastWithResult("alert", alert)
+}
+
+func (s *Server) BroadcastWithResult(msgType string, data interface{}) error {
+	msg := Message{
+		Type:      msgType,
+		Timestamp: time.Now(),
+		Data:      data,
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.clients) == 0 {
+		return fmt.Errorf("no WebSocket clients connected")
+	}
+
+	dataBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	var sendErrors []error
+	for conn := range s.clients {
+		err := conn.WriteMessage(websocket.TextMessage, dataBytes)
+		if err != nil {
+			sendErrors = append(sendErrors, fmt.Errorf("client %s: %w", conn.RemoteAddr(), err))
+		}
+	}
+
+	if len(sendErrors) > 0 {
+		return fmt.Errorf("partial broadcast failure: %d/%d clients failed: %v",
+			len(sendErrors), len(s.clients), sendErrors[0])
+	}
+
+	return nil
 }
 
 func (s *Server) BroadcastSensorData(data *models.SensorData) {

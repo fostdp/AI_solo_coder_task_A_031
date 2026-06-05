@@ -48,15 +48,23 @@ type SensorStatus struct {
 }
 
 type AlertManager struct {
-	thresholds      ThresholdConfig
-	alerts          []*models.Alert
-	sensorStatus    map[string]*SensorStatus
-	fanStatus       map[string]*FanStatus
-	mu              sync.RWMutex
-	wsServer        *websocket.Server
-	smsConfig       SMSConfig
-	activeAlerts    map[string]*models.Alert
-	alertHistory    []*models.Alert
+	thresholds          ThresholdConfig
+	alerts              []*models.Alert
+	sensorStatus        map[string]*SensorStatus
+	fanStatus           map[string]*FanStatus
+	mu                  sync.RWMutex
+	wsServer            *websocket.Server
+	smsConfig           SMSConfig
+	activeAlerts        map[string]*models.Alert
+	alertHistory        []*models.Alert
+	wsAvailable         bool
+	wsClientCount       int
+	wsLastStateChange   time.Time
+	alertBuffer         []*BufferedAlert
+	bufferMaxSize       int
+	smsFallbackEnabled  bool
+	smsFallbackLevel    int
+	channelSwitchCount  int
 }
 
 type FanStatus struct {
@@ -66,15 +74,25 @@ type FanStatus struct {
 	FaultStart  *time.Time
 }
 
-type SMSConfig struct {
-	Enabled    bool
-	APIURL     string
-	APIKey     string
-	Recipients []string
+type BufferedAlert struct {
+	Alert       *models.Alert
+	QueuedAt    time.Time
+	Delivered   bool
+	DeliveredAt time.Time
+	Channel     string
+	RetryCount  int
 }
 
+type ChannelStatus int
+
+const (
+	ChannelPrimary ChannelStatus = iota
+	ChannelDegraded
+	ChannelFailed
+)
+
 func NewAlertManager(ws *websocket.Server, smsCfg SMSConfig) *AlertManager {
-	return &AlertManager{
+	am := &AlertManager{
 		thresholds: ThresholdConfig{
 			NH3Threshold:    5.0,
 			TNThreshold:     15.0,
@@ -82,13 +100,87 @@ func NewAlertManager(ws *websocket.Server, smsCfg SMSConfig) *AlertManager {
 			OfflineTimeout:  5 * time.Minute,
 			FanFaultTimeout: 60 * time.Second,
 		},
-		sensorStatus: make(map[string]*SensorStatus),
-		fanStatus:    make(map[string]*FanStatus),
-		activeAlerts: make(map[string]*models.Alert),
-		alertHistory: make([]*models.Alert, 0, 1000),
-		wsServer:     ws,
-		smsConfig:    smsCfg,
+		sensorStatus:       make(map[string]*SensorStatus),
+		fanStatus:          make(map[string]*FanStatus),
+		activeAlerts:       make(map[string]*models.Alert),
+		alertHistory:       make([]*models.Alert, 0, 1000),
+		alertBuffer:        make([]*BufferedAlert, 0, 100),
+		bufferMaxSize:      100,
+		smsFallbackEnabled: true,
+		smsFallbackLevel:   1,
+		wsServer:           ws,
+		smsConfig:          smsCfg,
 	}
+
+	if ws != nil {
+		ws.SetStatusChangeCallback(am.OnWSStatusChange)
+		am.wsAvailable = ws.HasClients()
+		log.Printf("[ALERT] WebSocket status initialized: available=%v", am.wsAvailable)
+	}
+
+	return am
+}
+
+type SMSConfig struct {
+	Enabled    bool
+	APIURL     string
+	APIKey     string
+	Recipients []string
+}
+
+func (am *AlertManager) OnWSStatusChange(connected bool, clientCount int) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	oldStatus := am.wsAvailable
+	am.wsAvailable = connected
+	am.wsClientCount = clientCount
+	am.wsLastStateChange = time.Now()
+
+	if oldStatus != connected {
+		am.channelSwitchCount++
+		log.Printf("[ALERT] WebSocket status changed: %v -> %v, clients=%d, total_switches=%d",
+			oldStatus, connected, clientCount, am.channelSwitchCount)
+
+		if connected {
+			log.Printf("[ALERT] WebSocket reconnected, flushing buffered alerts (%d pending)", len(am.alertBuffer))
+			go am.flushBufferedAlerts()
+		} else {
+			log.Printf("[ALERT] WebSocket disconnected, enabling SMS fallback for all alerts")
+			go am.resendBufferedAlertsViaSMS()
+		}
+	}
+}
+
+func (am *AlertManager) GetChannelStatus() ChannelStatus {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+
+	if am.wsAvailable {
+		return ChannelPrimary
+	} else if am.smsConfig.Enabled {
+		return ChannelDegraded
+	}
+	return ChannelFailed
+}
+
+func (am *AlertManager) shouldUseSMSFallback(alertLevel int) bool {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+
+	if !am.smsFallbackEnabled {
+		return false
+	}
+
+	if !am.wsAvailable {
+		return true
+	}
+
+	if alertLevel <= am.smsFallbackLevel && am.wsAvailable {
+		return false
+	}
+
+	return false
 }
 
 func (am *AlertManager) UpdateSensorData(sensorID string, value float64, sensorType models.SensorType, timestamp time.Time) {
@@ -248,13 +340,132 @@ func (am *AlertManager) createAlert(level AlertLevel, alertType AlertType, title
 
 	log.Printf("[ALERT] Level %d - %s: %s", level, title, message)
 
-	if am.wsServer != nil {
-		am.wsServer.BroadcastAlert(alert)
+	am.deliverAlert(alert)
+}
+
+func (am *AlertManager) deliverAlert(alert *models.Alert) {
+	am.mu.RLock()
+	wsAvailable := am.wsAvailable
+	smsEnabled := am.smsConfig.Enabled
+	useSMSFallback := am.shouldUseSMSFallback(alert.Level)
+	am.mu.RUnlock()
+
+	delivered := false
+	channelsUsed := []string{}
+
+	if wsAvailable && am.wsServer != nil {
+		err := am.wsServer.BroadcastAlert(alert)
+		if err != nil {
+			log.Printf("[ALERT] WebSocket broadcast failed for alert %s: %v", alert.AlertID, err)
+		} else {
+			delivered = true
+			channelsUsed = append(channelsUsed, "websocket")
+			log.Printf("[ALERT] Alert %s delivered via WebSocket", alert.AlertID)
+		}
 	}
 
-	if am.smsConfig.Enabled {
-		go am.sendSMS(alert)
+	if useSMSFallback || !wsAvailable {
+		if smsEnabled {
+			go am.sendSMS(alert)
+			channelsUsed = append(channelsUsed, "sms")
+			log.Printf("[ALERT] Alert %s sent via SMS (fallback: %v)", alert.AlertID, useSMSFallback)
+		} else if !delivered {
+			log.Printf("[ALERT] WARNING: No delivery channel available for alert %s!", alert.AlertID)
+		}
 	}
+
+	if !delivered && smsEnabled {
+		buffered := &BufferedAlert{
+			Alert:      alert,
+			QueuedAt:   time.Now(),
+			Delivered:  false,
+			Channel:    "buffer",
+			RetryCount: 0,
+		}
+		am.mu.Lock()
+		if len(am.alertBuffer) < am.bufferMaxSize {
+			am.alertBuffer = append(am.alertBuffer, buffered)
+			log.Printf("[ALERT] Alert %s buffered for later delivery (buffer size: %d)",
+				alert.AlertID, len(am.alertBuffer))
+		} else {
+			log.Printf("[ALERT] WARNING: Alert buffer full, dropping alert %s", alert.AlertID)
+		}
+		am.mu.Unlock()
+	}
+
+	am.mu.Lock()
+	alert.DeliveryChannels = channelsUsed
+	alert.Delivered = delivered || smsEnabled
+	am.mu.Unlock()
+}
+
+func (am *AlertManager) flushBufferedAlerts() {
+	am.mu.Lock()
+	buffered := make([]*BufferedAlert, len(am.alertBuffer))
+	copy(buffered, am.alertBuffer)
+	am.alertBuffer = am.alertBuffer[:0]
+	am.mu.Unlock()
+
+	deliveredCount := 0
+	for _, ba := range buffered {
+		if ba.Delivered {
+			continue
+		}
+
+		if am.wsServer != nil {
+			err := am.wsServer.BroadcastAlert(ba.Alert)
+			if err != nil {
+				log.Printf("[ALERT] Failed to flush buffered alert %s: %v", ba.Alert.AlertID, err)
+			} else {
+				ba.Delivered = true
+				ba.DeliveredAt = time.Now()
+				ba.Channel = "websocket"
+				deliveredCount++
+				log.Printf("[ALERT] Buffered alert %s flushed via WebSocket", ba.Alert.AlertID)
+			}
+		}
+	}
+
+	log.Printf("[ALERT] Flush complete: %d/%d alerts delivered", deliveredCount, len(buffered))
+}
+
+func (am *AlertManager) resendBufferedAlertsViaSMS() {
+	if !am.smsConfig.Enabled {
+		log.Printf("[ALERT] SMS not enabled, cannot resend buffered alerts")
+		return
+	}
+
+	am.mu.RLock()
+	buffered := make([]*BufferedAlert, len(am.alertBuffer))
+	copy(buffered, am.alertBuffer)
+	am.mu.RUnlock()
+
+	sentCount := 0
+	for _, ba := range buffered {
+		if ba.Delivered {
+			continue
+		}
+
+		ba.RetryCount++
+		if ba.RetryCount > 3 {
+			log.Printf("[ALERT] Alert %s exceeded max retries, discarding", ba.Alert.AlertID)
+			continue
+		}
+
+		go am.sendSMS(ba.Alert)
+		ba.Delivered = true
+		ba.DeliveredAt = time.Now()
+		ba.Channel = "sms_fallback"
+		sentCount++
+		log.Printf("[ALERT] Buffered alert %s resent via SMS (attempt %d)",
+			ba.Alert.AlertID, ba.RetryCount)
+	}
+
+	am.mu.Lock()
+	am.alertBuffer = am.alertBuffer[:0]
+	am.mu.Unlock()
+
+	log.Printf("[ALERT] Buffered alerts resent via SMS: %d sent", sentCount)
 }
 
 func (am *AlertManager) resolveAlert(sensorID string, alertType AlertType) {
@@ -354,15 +565,47 @@ func (am *AlertManager) GetStatus() map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
-		"active_alerts":    len(am.activeAlerts),
-		"level1_alerts":    level1Count,
-		"level2_alerts":    level2Count,
-		"total_sensors":    len(am.sensorStatus),
-		"online_sensors":   onlineSensors,
-		"offline_sensors":  len(am.sensorStatus) - onlineSensors,
-		"total_fans":       len(am.fanStatus),
+	channelStatus := am.GetChannelStatus()
+	channelStatusStr := "unknown"
+	switch channelStatus {
+	case ChannelPrimary:
+		channelStatusStr = "primary"
+	case ChannelDegraded:
+		channelStatusStr = "degraded"
+	case ChannelFailed:
+		channelStatusStr = "failed"
 	}
+
+	return map[string]interface{}{
+		"active_alerts":      len(am.activeAlerts),
+		"level1_alerts":      level1Count,
+		"level2_alerts":      level2Count,
+		"total_sensors":      len(am.sensorStatus),
+		"online_sensors":     onlineSensors,
+		"offline_sensors":    len(am.sensorStatus) - onlineSensors,
+		"total_fans":       len(am.fanStatus),
+		"channel_status":      channelStatusStr,
+		"ws_available":      am.wsAvailable,
+		"ws_client_count":    am.wsClientCount,
+		"ws_last_change":    am.wsLastStateChange,
+		"buffer_size":        len(am.alertBuffer),
+		"channel_switches":   am.channelSwitchCount,
+		"sms_fallback_enabled": am.smsFallbackEnabled,
+	}
+}
+
+func (am *AlertManager) SetSMSFallbackEnabled(enabled bool) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.smsFallbackEnabled = enabled
+	log.Printf("[ALERT] SMS fallback %s", map[bool]string{true: "enabled", false: "disabled"}[enabled])
+}
+
+func (am *AlertManager) SetSMSFallbackLevel(level int) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.smsFallbackLevel = level
+	log.Printf("[ALERT] SMS fallback level set to %d", level)
 }
 
 func getSensorTypeName(sensorType models.SensorType) string {

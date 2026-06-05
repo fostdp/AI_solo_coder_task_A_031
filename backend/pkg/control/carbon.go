@@ -11,6 +11,7 @@ type CarbonControlSystem struct {
 	NO3Actual           float64
 	NO3Setpoint         float64
 	CODInfluent         float64
+	LastCODInfluent     float64
 	CODRequired         float64
 	CODAvailable        float64
 	TNInfluent          float64
@@ -23,6 +24,10 @@ type CarbonControlSystem struct {
 	MinDosage           float64
 	CODToNRatio         float64
 	LastUpdate          time.Time
+	LastCalculationTime time.Time
+	CODChangeThreshold  float64
+	EventDrivenEnabled  bool
+	LastCODSignificantChange time.Time
 	History             []CarbonHistoryRecord
 	mu                  sync.RWMutex
 }
@@ -37,13 +42,15 @@ type CarbonHistoryRecord struct {
 
 func NewCarbonControlSystem() *CarbonControlSystem {
 	return &CarbonControlSystem{
-		NO3Setpoint:              10.0,
-		MaxDosage:                50.0,
-		MinDosage:                0.0,
-		CODToNRatio:              5.0,
-		CarbonSourceType:         "acetate",
+		NO3Setpoint:               10.0,
+		MaxDosage:                 50.0,
+		MinDosage:                 0.0,
+		CODToNRatio:               5.0,
+		CarbonSourceType:          "acetate",
 		CarbonSourceConcentration: 500000.0,
-		History:                  make([]CarbonHistoryRecord, 0, 100),
+		CODChangeThreshold:        0.2,
+		EventDrivenEnabled:        true,
+		History:                   make([]CarbonHistoryRecord, 0, 100),
 	}
 }
 
@@ -51,11 +58,45 @@ func (ccs *CarbonControlSystem) Update(no3Actual, codInfluent, tnInfluent, tnEff
 	ccs.mu.Lock()
 	defer ccs.mu.Unlock()
 
+	ccs.updateInternal(no3Actual, codInfluent, tnInfluent, tnEffluent, flowRate, false)
+}
+
+func (ccs *CarbonControlSystem) OnCODUpdate(codNew, no3Actual, tnInfluent, tnEffluent, flowRate float64) bool {
+	ccs.mu.Lock()
+	defer ccs.mu.Unlock()
+
+	if !ccs.EventDrivenEnabled {
+		return false
+	}
+
+	if ccs.LastCODInfluent <= 0 {
+		ccs.LastCODInfluent = codNew
+		return false
+	}
+
+	codChange := math.Abs(codNew - ccs.LastCODInfluent) / ccs.LastCODInfluent
+
+	if codChange >= ccs.CODChangeThreshold {
+		log.Printf("[CARBON] COD significant change detected: old=%.2f, new=%.2f, change=%.2f%%, threshold=%.2f%%, triggering immediate recalculation",
+			ccs.LastCODInfluent, codNew, codChange*100, ccs.CODChangeThreshold*100)
+
+		ccs.LastCODSignificantChange = time.Now()
+		ccs.updateInternal(no3Actual, codNew, tnInfluent, tnEffluent, flowRate, true)
+		return true
+	}
+
+	ccs.LastCODInfluent = codNew
+	return false
+}
+
+func (ccs *CarbonControlSystem) updateInternal(no3Actual, codInfluent, tnInfluent, tnEffluent, flowRate float64, isEventDriven bool) {
+	ccs.LastCODInfluent = ccs.CODInfluent
 	ccs.NO3Actual = no3Actual
 	ccs.CODInfluent = codInfluent
 	ccs.TNInfluent = tnInfluent
 	ccs.TNEffluent = tnEffluent
 	ccs.LastUpdate = time.Now()
+	ccs.LastCalculationTime = time.Now()
 
 	if tnInfluent > 0 {
 		ccs.TNRemovalRate = (tnInfluent - tnEffluent) / tnInfluent * 100
@@ -73,6 +114,11 @@ func (ccs *CarbonControlSystem) Update(no3Actual, codInfluent, tnInfluent, tnEff
 	ccs.History = append(ccs.History, record)
 	if len(ccs.History) > 100 {
 		ccs.History = ccs.History[1:]
+	}
+
+	if isEventDriven {
+		log.Printf("[CARBON] Event-driven recalculation complete: dosage=%.3f kg/h, removal_rate=%.2f%%",
+			ccs.DosageSetpoint, ccs.TNRemovalRate)
 	}
 }
 
@@ -134,19 +180,24 @@ func (ccs *CarbonControlSystem) GetStatus() map[string]interface{} {
 	defer ccs.mu.RUnlock()
 
 	return map[string]interface{}{
-		"no3_actual":             ccs.NO3Actual,
-		"no3_setpoint":           ccs.NO3Setpoint,
-		"cod_influent":           ccs.CODInfluent,
-		"cod_required":           ccs.CODRequired,
-		"cod_available":          ccs.CODAvailable,
-		"tn_influent":            ccs.TNInfluent,
-		"tn_effluent":            ccs.TNEffluent,
-		"tn_removal_rate":        ccs.TNRemovalRate,
-		"dosage_setpoint":        ccs.DosageSetpoint,
-		"carbon_source_type":     ccs.CarbonSourceType,
-		"carbon_source_concentration": ccs.CarbonSourceConcentration,
-		"cod_to_n_ratio":         ccs.CODToNRatio,
-		"last_update":            ccs.LastUpdate,
+		"no3_actual":                    ccs.NO3Actual,
+		"no3_setpoint":                  ccs.NO3Setpoint,
+		"cod_influent":                  ccs.CODInfluent,
+		"last_cod_influent":             ccs.LastCODInfluent,
+		"cod_required":                  ccs.CODRequired,
+		"cod_available":                 ccs.CODAvailable,
+		"tn_influent":                   ccs.TNInfluent,
+		"tn_effluent":                   ccs.TNEffluent,
+		"tn_removal_rate":               ccs.TNRemovalRate,
+		"dosage_setpoint":               ccs.DosageSetpoint,
+		"carbon_source_type":            ccs.CarbonSourceType,
+		"carbon_source_concentration":   ccs.CarbonSourceConcentration,
+		"cod_to_n_ratio":                ccs.CODToNRatio,
+		"last_update":                   ccs.LastUpdate,
+		"last_calculation_time":         ccs.LastCalculationTime,
+		"cod_change_threshold":          ccs.CODChangeThreshold,
+		"event_driven_enabled":          ccs.EventDrivenEnabled,
+		"last_significant_cod_change":   ccs.LastCODSignificantChange,
 	}
 }
 
@@ -194,6 +245,34 @@ func (ccs *CarbonControlSystem) SetDosageLimits(min, max float64) {
 	defer ccs.mu.Unlock()
 	ccs.MinDosage = min
 	ccs.MaxDosage = max
+}
+
+func (ccs *CarbonControlSystem) SetCODChangeThreshold(threshold float64) {
+	ccs.mu.Lock()
+	defer ccs.mu.Unlock()
+	ccs.CODChangeThreshold = threshold
+	log.Printf("[CARBON] COD change threshold set to %.2f%%", threshold*100)
+}
+
+func (ccs *CarbonControlSystem) SetEventDrivenEnabled(enabled bool) {
+	ccs.mu.Lock()
+	defer ccs.mu.Unlock()
+	ccs.EventDrivenEnabled = enabled
+	log.Printf("[CARBON] Event-driven control %s", map[bool]string{true: "enabled", false: "disabled"}[enabled])
+}
+
+func (ccs *CarbonControlSystem) GetLastSignificantCODChange() time.Time {
+	ccs.mu.RLock()
+	defer ccs.mu.RUnlock()
+	return ccs.LastCODSignificantChange
+}
+
+func (ccs *CarbonControlSystem) ForceRecalculation(flowRate float64) {
+	ccs.mu.Lock()
+	defer ccs.mu.Unlock()
+	log.Printf("[CARBON] Manual recalculation triggered")
+	ccs.calculateOptimalDosage(flowRate)
+	ccs.LastCalculationTime = time.Now()
 }
 
 type CarbonOptimizer struct {
