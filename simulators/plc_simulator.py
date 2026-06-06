@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PLC 模拟器
-模拟污水处理厂的鼓风机、阀门等设备的PLC控制逻辑
-- 接收MQTT控制指令
-- 模拟设备状态变化
-- 上报设备状态
+PLC 模拟器 (增强版)
+支持环境变量配置、MQTT QoS 1、指令执行反馈、设备状态上报
 """
 
 import json
@@ -13,18 +10,47 @@ import time
 import random
 import threading
 import math
+import os
 from datetime import datetime
 import paho.mqtt.client as mqtt
 
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
-CONTROL_TOPIC = "control/+/+"
-STATUS_TOPIC = "plc/{plc_id}/status"
-REPORT_INTERVAL = 5
+
+def get_env_bool(key, default=False):
+    val = os.environ.get(key, str(default)).lower()
+    return val in ('true', '1', 'yes', 'y')
+
+
+def get_env_float(key, default):
+    try:
+        return float(os.environ.get(key, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def get_env_int(key, default):
+    try:
+        return int(os.environ.get(key, default))
+    except (ValueError, TypeError):
+        return default
+
+
+MQTT_BROKER = os.environ.get('MQTT_BROKER', 'localhost')
+MQTT_PORT = get_env_int('MQTT_PORT', 1883)
+MQTT_USERNAME = os.environ.get('MQTT_USERNAME', 'admin')
+MQTT_PASSWORD = os.environ.get('MQTT_PASSWORD', 'admin123')
+MQTT_QOS = get_env_int('MQTT_QOS', 1)
+CONTROL_TOPIC = os.environ.get('CONTROL_TOPIC', 'control/+/+')
+STATUS_TOPIC = os.environ.get('STATUS_TOPIC', 'plc/{plc_id}/status')
+FEEDBACK_TOPIC = os.environ.get('FEEDBACK_TOPIC', 'plc/{plc_id}/feedback')
+REPORT_INTERVAL = get_env_int('REPORT_INTERVAL', 5)
+STATUS_TOPIC_QOS = get_env_int('STATUS_TOPIC_QOS', 1)
+
+FAULT_SIMULATION_ENABLED = get_env_bool('FAULT_SIMULATION_ENABLED', True)
+RESPONSE_TIME = get_env_float('RESPONSE_TIME', 0.5)
 
 PLC_CONFIGS = [
     {
-        "plc_id": "PLC-AER-01",
+        "plc_id": os.environ.get('PLC_AER_ID', 'PLC-AER-01'),
         "name": "曝气系统PLC",
         "devices": [
             {"type": "fan", "id": "aerobic1_fan", "name": "1号段曝气风机", "max_speed": 100, "min_speed": 30},
@@ -36,28 +62,32 @@ PLC_CONFIGS = [
         ]
     },
     {
-        "plc_id": "PLC-CARB-01",
+        "plc_id": os.environ.get('PLC_CARB_ID', 'PLC-CARB-01'),
         "name": "碳源投加PLC",
         "devices": [
-            {"type": "pump", "id": "carbon_pump_01", "name": "碳源投加泵1号", "max_dosage": 50, "min_dosage": 0},
+            {"type": "pump", "id": "carbon_pump_01", "name": "碳源投加泵1号", "max_dosage": 100, "min_dosage": 0},
+            {"type": "pump", "id": "carbon_pump_02", "name": "碳源投加泵2号", "max_dosage": 100, "min_dosage": 0},
             {"type": "valve", "id": "carbon_valve_01", "name": "碳源阀门1号", "max_opening": 100, "min_opening": 0},
-            {"type": "flow_meter", "id": "carbon_flow_01", "name": "碳源流量计", "max_flow": 100, "min_flow": 0},
+            {"type": "valve", "id": "carbon_valve_02", "name": "碳源阀门2号", "max_opening": 100, "min_opening": 0},
+            {"type": "flow_meter", "id": "carbon_flow_01", "name": "碳源流量计", "max_flow": 200, "min_flow": 0},
         ]
     },
     {
-        "plc_id": "PLC-MIX-01",
+        "plc_id": os.environ.get('PLC_MIX_ID', 'PLC-MIX-01'),
         "name": "混合液回流PLC",
         "devices": [
-            {"type": "pump", "id": "mixed_pump_01", "name": "混合液回流泵", "max_flow": 1500, "min_flow": 0},
+            {"type": "pump", "id": "mixed_pump_01", "name": "混合液回流泵", "max_flow": 2000, "min_flow": 0},
+            {"type": "pump", "id": "mixed_pump_02", "name": "混合液回流泵备用", "max_flow": 2000, "min_flow": 0},
             {"type": "valve", "id": "mixed_valve_01", "name": "回流阀门", "max_opening": 100, "min_opening": 0},
         ]
     },
     {
-        "plc_id": "PLC-SLU-01",
+        "plc_id": os.environ.get('PLC_SLU_ID', 'PLC-SLU-01'),
         "name": "污泥回流PLC",
         "devices": [
-            {"type": "pump", "id": "sludge_pump_01", "name": "污泥回流泵1号", "max_flow": 500, "min_flow": 0},
-            {"type": "pump", "id": "sludge_pump_02", "name": "污泥回流泵2号", "max_flow": 500, "min_flow": 0},
+            {"type": "pump", "id": "sludge_pump_01", "name": "污泥回流泵1号", "max_flow": 800, "min_flow": 0},
+            {"type": "pump", "id": "sludge_pump_02", "name": "污泥回流泵2号", "max_flow": 800, "min_flow": 0},
+            {"type": "pump", "id": "sludge_pump_03", "name": "剩余污泥泵", "max_flow": 300, "min_flow": 0},
         ]
     }
 ]
@@ -78,6 +108,7 @@ class PLCDevice:
         self.fault_code = ""
         self.last_command = None
         self.last_command_time = None
+        self.last_command_result = None
         self.start_time = datetime.now()
         self.run_hours = 0
         self.efficiency = 0.95
@@ -88,7 +119,10 @@ class PLCDevice:
         self.flow_rate = 0.0
 
         self.fault_probability = 0.0001
-        self.response_time = 0.5
+        self.response_time = RESPONSE_TIME
+        self.command_count = 0
+        self.success_count = 0
+        self.failed_count = 0
 
     def _get_value_key(self):
         if self.type == "fan":
@@ -115,30 +149,71 @@ class PLCDevice:
     def execute_command(self, action, value):
         self.last_command = action
         self.last_command_time = datetime.now()
+        self.command_count += 1
+
+        success = False
+        result_msg = ""
 
         if action in ["set_speed", "set_opening", "set_dosage", "set_flow"]:
-            self.target_value = max(self.min_value, min(self.max_value, value))
+            clamped_value = max(self.min_value, min(self.max_value, value))
+            if clamped_value != value:
+                result_msg = f"值已限制在[{self.min_value}, {self.max_value}]范围内"
+            self.target_value = clamped_value
             threading.Timer(self.response_time, self._apply_value).start()
-            return True
+            success = True
+            self.success_count += 1
+            result_msg = result_msg or f"已设置目标值: {clamped_value}"
         elif action == "start":
             self.status = "running"
-            return True
+            success = True
+            self.success_count += 1
+            result_msg = "设备已启动"
         elif action == "stop":
             self.status = "stopped"
             self.target_value = 0
-            return True
+            self._apply_value()
+            success = True
+            self.success_count += 1
+            result_msg = "设备已停止"
         elif action == "reset":
             self.status = "running"
             self.fault_code = ""
-            return True
-        return False
+            self.failed_count = max(0, self.failed_count - 1)
+            success = True
+            self.success_count += 1
+            result_msg = "设备已复位"
+        elif action == "emergency_stop":
+            self.status = "stopped"
+            self.target_value = 0
+            self.current_value = 0
+            self._update_parameters()
+            success = True
+            self.success_count += 1
+            result_msg = "紧急停止已执行"
+        else:
+            success = False
+            self.failed_count += 1
+            result_msg = f"未知命令: {action}"
+
+        self.last_command_result = {
+            "action": action,
+            "requested_value": value,
+            "target_value": self.target_value,
+            "success": success,
+            "message": result_msg,
+            "timestamp": self.last_command_time.isoformat(),
+        }
+
+        print(f"[{self.plc_id}] {self.id}: {action}={value} -> {'成功' if success else '失败'}: {result_msg}")
+
+        return self.last_command_result
 
     def _apply_value(self):
         self.current_value = self.target_value
         self._update_parameters()
 
     def _update_parameters(self):
-        if self.status == "running":
+        if self.status == "running" and self.current_value > 0:
             load_factor = self.current_value / self.max_value if self.max_value > 0 else 0
 
             if self.type == "fan":
@@ -146,21 +221,22 @@ class PLCDevice:
                 self.vibration = 0.5 + load_factor * 2.5
                 self.temperature = 25 + load_factor * 30
                 self.pressure = 0.1 + load_factor * 0.5
-                self.flow_rate = load_factor * 5000
+                self.flow_rate = load_factor * 6000
             elif self.type == "pump":
                 self.current_draw = 20 + load_factor * 80
                 self.vibration = 0.3 + load_factor * 1.5
                 self.temperature = 25 + load_factor * 20
                 self.flow_rate = load_factor * self.max_value
             elif self.type == "valve":
-                self.flow_rate = load_factor * 1000
+                self.current_draw = 5 + load_factor * 10
+                self.flow_rate = load_factor * 1500
         else:
             self.current_draw = 0
             self.vibration = 0
             self.temperature = 25
             self.flow_rate = 0
 
-        if random.random() < self.fault_probability:
+        if FAULT_SIMULATION_ENABLED and random.random() < self.fault_probability:
             self._generate_fault()
 
     def _generate_fault(self):
@@ -170,34 +246,36 @@ class PLCDevice:
             ("E003", "振动异常"),
             ("E004", "通信故障"),
             ("E005", "电源异常"),
+            ("E006", "执行器卡涩"),
         ]
         fault_code, fault_msg = random.choice(fault_types)
         self.fault_code = fault_code
         self.status = "fault"
+        self.failed_count += 1
         print(f"[{self.plc_id}] 设备 {self.id} 故障: {fault_msg} ({fault_code})")
 
-        threading.Timer(60, self._clear_fault).start()
+        threading.Timer(random.randint(30, 120), self._clear_fault).start()
 
     def _clear_fault(self):
         if self.status == "fault":
             self.fault_code = ""
             self.status = "running"
-            print(f"[{self.plc_id}] 设备 {self.id} 故障已清除")
+            print(f"[{self.plc_id}] 设备 {self.id} 故障已自动清除")
 
     def update(self):
-        time_factor = math.sin(time.time() / 60) * 0.05
+        time_factor = math.sin(time.time() / 60) * 0.03
 
         if self.status == "running" and abs(self.current_value - self.target_value) > 0.1:
-            step = (self.target_value - self.current_value) * 0.1
+            step = (self.target_value - self.current_value) * 0.15
             self.current_value += step
             self._update_parameters()
 
-        self.run_hours += 5 / 3600
+        self.run_hours += REPORT_INTERVAL / 3600
 
         if self.status == "running":
-            self.vibration += random.uniform(-0.1, 0.1)
-            self.temperature += random.uniform(-0.5, 0.5)
-            self.current_draw += random.uniform(-2, 2)
+            self.vibration += random.uniform(-0.05, 0.05)
+            self.temperature += random.uniform(-0.3, 0.3)
+            self.current_draw += random.uniform(-1, 1)
 
             self.vibration = max(0, min(5, self.vibration))
             self.temperature = max(20, min(80, self.temperature))
@@ -224,8 +302,12 @@ class PLCDevice:
                 "pressure": round(self.pressure, 3),
                 "flow_rate": round(self.flow_rate, 2),
             },
-            "last_command": self.last_command,
-            "last_command_time": self.last_command_time.isoformat() if self.last_command_time else None,
+            "statistics": {
+                "command_count": self.command_count,
+                "success_count": self.success_count,
+                "failed_count": self.failed_count,
+            },
+            "last_command": self.last_command_result,
         }
 
 
@@ -243,11 +325,13 @@ class PLCSimulator:
         self.connected = False
         self.scan_cycle = 100
         self.communication_errors = 0
+        self.commands_received = 0
         self.last_scan = None
 
     def connect_mqtt(self):
-        self.client = mqtt.Client(client_id=self.plc_id, clean_session=True)
-        self.client.username_pw_set("admin", "admin123")
+        client_id = f"{self.plc_id}_{int(time.time())}"
+        self.client = mqtt.Client(client_id=client_id, clean_session=True)
+        self.client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message = self.on_message
@@ -263,8 +347,9 @@ class PLCSimulator:
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.connected = True
-            print(f"[{self.plc_id}] MQTT连接成功")
-            self.client.subscribe(CONTROL_TOPIC, qos=1)
+            print(f"[{self.plc_id}] MQTT连接成功，QoS={MQTT_QOS}")
+            self.client.subscribe(CONTROL_TOPIC, qos=MQTT_QOS)
+            print(f"[{self.plc_id}] 已订阅控制指令主题: {CONTROL_TOPIC} (QoS {MQTT_QOS})")
         else:
             print(f"[{self.plc_id}] MQTT连接失败，错误码: {rc}")
 
@@ -282,24 +367,46 @@ class PLCSimulator:
                 payload = json.loads(msg.payload.decode())
                 action = payload.get("action")
                 value = payload.get("value", 0)
+                command_id = payload.get("command_id", f"cmd_{int(time.time() * 1000)}")
 
+                self.commands_received += 1
+                print(f"[{self.plc_id}] 收到指令 ({msg.qos}): {target_type}/{target_id} {action}={value}, cmd_id={command_id}")
+
+                results = []
                 device = self.devices.get(target_id)
                 if device:
-                    success = device.execute_command(action, value)
-                    if success:
-                        print(f"[{self.plc_id}] 执行命令: {target_id} {action}={value}")
-                    else:
-                        print(f"[{self.plc_id}] 命令执行失败: {target_id} {action}")
+                    result = device.execute_command(action, value)
+                    results.append(result)
                 else:
                     for dev in self.devices.values():
                         if dev.type == target_type:
-                            success = dev.execute_command(action, value)
-                            if success:
-                                print(f"[{self.plc_id}] 执行命令: {dev.id} {action}={value}")
+                            result = dev.execute_command(action, value)
+                            results.append(result)
+
+                if results:
+                    self._send_feedback(command_id, target_id, results)
 
         except Exception as e:
             print(f"[{self.plc_id}] 处理命令异常: {e}")
             self.communication_errors += 1
+
+    def _send_feedback(self, command_id, target_id, results):
+        feedback_topic = FEEDBACK_TOPIC.format(plc_id=self.plc_id)
+        feedback = {
+            "command_id": command_id,
+            "plc_id": self.plc_id,
+            "target_id": target_id,
+            "timestamp": datetime.now().isoformat(),
+            "results": results,
+            "all_success": all(r["success"] for r in results),
+        }
+
+        try:
+            payload = json.dumps(feedback, ensure_ascii=False)
+            self.client.publish(feedback_topic, payload, qos=STATUS_TOPIC_QOS)
+            print(f"[{self.plc_id}] 已发送执行反馈 -> {feedback_topic}")
+        except Exception as e:
+            print(f"[{self.plc_id}] 发送反馈失败: {e}")
 
     def update_devices(self):
         self.last_scan = datetime.now()
@@ -311,13 +418,14 @@ class PLCSimulator:
             if not self.connect_mqtt():
                 return
 
+        topic = STATUS_TOPIC.format(plc_id=self.plc_id)
+
         for device in self.devices.values():
             status = device.get_status()
-            topic = STATUS_TOPIC.format(plc_id=self.plc_id)
 
             try:
                 payload = json.dumps(status, ensure_ascii=False)
-                self.client.publish(topic, payload, qos=1)
+                self.client.publish(topic, payload, qos=STATUS_TOPIC_QOS)
             except Exception as e:
                 print(f"[{self.plc_id}] 上报状态失败: {e}")
                 self.communication_errors += 1
@@ -325,6 +433,11 @@ class PLCSimulator:
     def get_summary(self):
         running = sum(1 for d in self.devices.values() if d.status == "running")
         fault = sum(1 for d in self.devices.values() if d.status == "fault")
+        stopped = sum(1 for d in self.devices.values() if d.status == "stopped")
+        total_commands = sum(d.command_count for d in self.devices.values())
+        total_success = sum(d.success_count for d in self.devices.values())
+        total_failed = sum(d.failed_count for d in self.devices.values())
+
         return {
             "plc_id": self.plc_id,
             "name": self.name,
@@ -332,6 +445,11 @@ class PLCSimulator:
             "total_devices": len(self.devices),
             "running_devices": running,
             "fault_devices": fault,
+            "stopped_devices": stopped,
+            "commands_received": self.commands_received,
+            "commands_executed": total_commands,
+            "commands_success": total_success,
+            "commands_failed": total_failed,
             "communication_errors": self.communication_errors,
             "last_scan": self.last_scan.isoformat() if self.last_scan else None,
         }
@@ -343,12 +461,24 @@ class PLCSimulator:
         self.connected = False
 
 
-def run_simulation():
-    print("=" * 60)
-    print("PLC 模拟器启动")
+def print_config():
+    print("=" * 70)
+    print("PLC 模拟器启动 (增强版)")
+    print("=" * 70)
     print(f"MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
-    print(f"上报间隔: {REPORT_INTERVAL}秒")
-    print("=" * 60)
+    print(f"MQTT QoS: {MQTT_QOS}")
+    print(f"状态上报QoS: {STATUS_TOPIC_QOS}")
+    print(f"状态上报间隔: {REPORT_INTERVAL}秒")
+    print(f"控制指令主题: {CONTROL_TOPIC}")
+    print(f"设备状态主题: {STATUS_TOPIC}")
+    print(f"执行反馈主题: {FEEDBACK_TOPIC}")
+    print(f"故障模拟: {'启用' if FAULT_SIMULATION_ENABLED else '禁用'}")
+    print(f"设备响应时间: {RESPONSE_TIME}秒")
+    print("=" * 70)
+
+
+def run_simulation():
+    print_config()
 
     plcs = []
     for config in PLC_CONFIGS:
@@ -369,7 +499,7 @@ def run_simulation():
         time.sleep(0.1)
 
     print("\n开始运行...")
-    print("=" * 60)
+    print("=" * 70)
 
     last_report = time.time()
     scan_count = 0
@@ -394,11 +524,17 @@ def run_simulation():
                 last_report = time.time()
 
                 if scan_count % 12 == 0:
-                    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 运行状态:")
+                    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 运行状态:")
                     for plc in plcs:
                         summary = plc.get_summary()
-                        print(f"  {summary['plc_id']}: 运行{summary['running_devices']}/{summary['total_devices']} "
+                        success_rate = (summary['commands_success'] / max(1, summary['commands_executed'])) * 100
+                        print(f"  {summary['plc_id']}: "
+                              f"运行{summary['running_devices']}/{summary['total_devices']} "
                               f"故障{summary['fault_devices']} "
+                              f"停止{summary['stopped_devices']} | "
+                              f"指令: 收到{summary['commands_received']} "
+                              f"执行{summary['commands_executed']} "
+                              f"成功率{success_rate:.1f}% | "
                               f"通信错误{summary['communication_errors']}")
 
             time.sleep(0.1)
@@ -407,33 +543,25 @@ def run_simulation():
         print("\n\n收到停止信号，正在关闭...")
         for plc in plcs:
             plc.disconnect()
+
+        print("\n" + "=" * 70)
+        print("PLC模拟器停止，最终统计:")
+        for plc in plcs:
+            summary = plc.get_summary()
+            success_rate = (summary['commands_success'] / max(1, summary['commands_executed'])) * 100
+            print(f"  {summary['plc_id']}: "
+                  f"总指令{summary['commands_executed']}, "
+                  f"成功{summary['commands_success']}, "
+                  f"失败{summary['commands_failed']}, "
+                  f"成功率{success_rate:.1f}%")
+        print("=" * 70)
         print("PLC模拟器已停止")
-
-
-def run_single_plc_test():
-    print("单PLC测试模式")
-    print("=" * 60)
-
-    plc = PLCSimulator(PLC_CONFIGS[0])
-    plc.connect_mqtt()
-
-    try:
-        for i in range(20):
-            plc.update_devices()
-            if i % 5 == 0:
-                plc.report_status()
-                print(json.dumps(plc.get_summary(), indent=2, ensure_ascii=False))
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        plc.disconnect()
 
 
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        run_single_plc_test()
+    if len(sys.argv) > 1 and sys.argv[1] == "config":
+        print_config()
     else:
         run_simulation()

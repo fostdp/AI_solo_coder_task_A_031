@@ -6,9 +6,11 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,7 +82,42 @@ func loadConfig() error {
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("../")
 	viper.AddConfigPath("/etc/sewage-plant/")
-	return viper.ReadInConfig()
+
+	viper.AutomaticEnv()
+	viper.SetEnvPrefix("SEWAGE")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	viper.SetDefault("server.port", 8080)
+	viper.SetDefault("server.mode", "debug")
+	viper.SetDefault("influxdb.addr", "http://localhost:8086")
+	viper.SetDefault("influxdb.username", "admin")
+	viper.SetDefault("influxdb.password", "admin123")
+	viper.SetDefault("influxdb.database", "sewage_plant")
+	viper.SetDefault("influxdb.retention_policy", "raw_data")
+	viper.SetDefault("influxdb.timeout", "10s")
+	viper.SetDefault("mqtt.broker", "tcp://localhost:1883")
+	viper.SetDefault("mqtt.client_id", "sewage_server")
+	viper.SetDefault("mqtt.username", "admin")
+	viper.SetDefault("mqtt.password", "public")
+	viper.SetDefault("websocket.port", 8081)
+	viper.SetDefault("websocket.path", "/ws")
+
+	if err := viper.ReadInConfig(); err != nil {
+		log.Printf("Warning: Config file not found, using defaults and environment variables: %v", err)
+	}
+
+	logConfig()
+	return nil
+}
+
+func logConfig() {
+	log.Println("=" * 60)
+	log.Println("Configuration loaded:")
+	log.Printf("  Server: port=%d, mode=%s", viper.GetInt("server.port"), viper.GetString("server.mode"))
+	log.Printf("  InfluxDB: addr=%s, db=%s", viper.GetString("influxdb.addr"), viper.GetString("influxdb.database"))
+	log.Printf("  MQTT: broker=%s", viper.GetString("mqtt.broker"))
+	log.Printf("  WebSocket: port=%d", viper.GetInt("websocket.port"))
+	log.Println("=" * 60)
 }
 
 func (s *Server) init() error {
@@ -564,7 +601,27 @@ func (s *Server) carbonStatusToMap(status *co.Status) map[string]interface{} {
 	}
 }
 
+func (s *Server) setupPprofRoutes() {
+	pprofGroup := s.ginEngine.Group("/debug/pprof")
+	{
+		pprofGroup.GET("/", gin.WrapF(pprof.Index))
+		pprofGroup.GET("/cmdline", gin.WrapF(pprof.Cmdline))
+		pprofGroup.GET("/profile", gin.WrapF(pprof.Profile))
+		pprofGroup.GET("/symbol", gin.WrapF(pprof.Symbol))
+		pprofGroup.GET("/trace", gin.WrapF(pprof.Trace))
+		pprofGroup.GET("/allocs", gin.WrapH(pprof.Handler("allocs")))
+		pprofGroup.GET("/block", gin.WrapH(pprof.Handler("block")))
+		pprofGroup.GET("/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+		pprofGroup.GET("/heap", gin.WrapH(pprof.Handler("heap")))
+		pprofGroup.GET("/mutex", gin.WrapH(pprof.Handler("mutex")))
+		pprofGroup.GET("/threadcreate", gin.WrapH(pprof.Handler("threadcreate")))
+	}
+	log.Printf("Pprof endpoints enabled at /debug/pprof")
+}
+
 func (s *Server) setupRoutes() {
+	s.setupPprofRoutes()
+
 	api := s.ginEngine.Group("/api")
 
 	api.GET("/health", func(c *gin.Context) {

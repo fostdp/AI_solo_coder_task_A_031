@@ -108,7 +108,7 @@ alert:
 
 sensors:
   do:
-    count: 30
+    count: 28
     locations:
       - anaerobic
       - anoxic
@@ -116,8 +116,8 @@ sensors:
       - aerobic2
       - aerobic3
   nh3:
-    count: 20
+    count: 18
   no3:
-    count: 15
+    count: 12
   po4:
     count: 10
