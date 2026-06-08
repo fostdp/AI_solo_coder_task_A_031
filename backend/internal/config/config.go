@@ -37,8 +37,14 @@ type PIDConfig struct {
 }
 
 type ServerConfig struct {
-	Port int    `mapstructure:"port"`
-	Mode string `mapstructure:"mode"`
+	Port        int        `mapstructure:"port"`
+	Mode        string     `mapstructure:"mode"`
+	Pprof       PprofConfig `mapstructure:"pprof"`
+}
+
+type PprofConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	Port    int  `mapstructure:"port"`
 }
 
 type InfluxDBConfig struct {

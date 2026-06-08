@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -54,6 +57,23 @@ func main() {
 	wsServer := websocket.NewServer(&cfg.WebSocket, logger)
 	go wsServer.Run()
 	logger.Info("WebSocket server started")
+
+	pprofEnabled := os.Getenv("PPROF_ENABLED")
+	if pprofEnabled == "" || pprofEnabled == "true" {
+		pprofPort := os.Getenv("PPROF_PORT")
+		if pprofPort == "" {
+			pprofPort = "6060"
+		}
+		if port, err := strconv.Atoi(pprofPort); err == nil {
+			go func() {
+				pprofAddr := fmt.Sprintf(":%d", port)
+				logger.Info("pprof server starting", zap.String("addr", pprofAddr))
+				if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+					logger.Error("pprof server failed", zap.Error(err))
+				}
+			}()
+		}
+	}
 
 	bufferSize := cfg.Collector.ChannelBufferSize
 	if bufferSize == 0 {

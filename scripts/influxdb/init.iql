@@ -1,11 +1,18 @@
-CREATE DATABASE sewage_plant WITH DURATION 365d REPLICATION 1 SHARD DURATION 7d NAME one_year;
+# InfluxDB Initialization Script
+# Data Retention Policy: 365 days
+# Data Compression: Snappy (configured in influxdb.conf)
+# Continuous Queries: Auto-aggregation for downsampling
 
-USE sewage_plant;
+CREATE DATABASE sewage WITH DURATION 365d REPLICATION 1 SHARD DURATION 7d NAME one_year;
 
-CREATE RETENTION POLICY one_month ON sewage_plant DURATION 30d REPLICATION 1;
-CREATE RETENTION POLICY one_week ON sewage_plant DURATION 7d REPLICATION 1;
+USE sewage;
 
-CREATE CONTINUOUS QUERY cq_sensor_1h ON sewage_plant
+CREATE RETENTION POLICY one_month ON sewage DURATION 30d REPLICATION 1;
+CREATE RETENTION POLICY one_week ON sewage DURATION 7d REPLICATION 1;
+
+ALTER RETENTION POLICY one_year ON sewage DURATION 365d SHARD DURATION 7d REPLICATION 1 DEFAULT;
+
+CREATE CONTINUOUS QUERY cq_sensor_1h ON sewage
 BEGIN
   SELECT mean(value) AS value, mean(setpoint) AS setpoint
   INTO one_year.sensor_data_1h
@@ -13,7 +20,7 @@ BEGIN
   GROUP BY time(1h), id, type, stage, section
 END;
 
-CREATE CONTINUOUS QUERY cq_sensor_5m ON sewage_plant
+CREATE CONTINUOUS QUERY cq_sensor_5m ON sewage
 BEGIN
   SELECT mean(value) AS value, mean(setpoint) AS setpoint
   INTO one_month.sensor_data_5m
@@ -21,7 +28,7 @@ BEGIN
   GROUP BY time(5m), id, type, stage, section
 END;
 
-CREATE CONTINUOUS QUERY cq_aeration_1h ON sewage_plant
+CREATE CONTINUOUS QUERY cq_aeration_1h ON sewage
 BEGIN
   SELECT mean(air_flow_set) AS air_flow_set, mean(air_flow_actual) AS air_flow_actual,
          mean(valve_open) AS valve_open, mean(do_actual) AS do_actual, mean(nh3_actual) AS nh3_actual
@@ -30,7 +37,7 @@ BEGIN
   GROUP BY time(1h), section
 END;
 
-CREATE CONTINUOUS QUERY cq_carbon_1h ON sewage_plant
+CREATE CONTINUOUS QUERY cq_carbon_1h ON sewage
 BEGIN
   SELECT mean(dosing_rate) AS dosing_rate, mean(dosing_actual) AS dosing_actual,
          mean(cod_influent) AS cod_influent, mean(no3_anoxic) AS no3_anoxic,
@@ -40,7 +47,7 @@ BEGIN
   GROUP BY time(1h)
 END;
 
-CREATE CONTINUOUS QUERY cq_metrics_1h ON sewage_plant
+CREATE CONTINUOUS QUERY cq_metrics_1h ON sewage
 BEGIN
   SELECT mean(power_consumption) AS power_consumption, mean(carbon_usage) AS carbon_usage,
          mean(tn_removal_rate) AS tn_removal_rate, mean(tp_removal_rate) AS tp_removal_rate,
@@ -50,7 +57,7 @@ BEGIN
   GROUP BY time(1h)
 END;
 
-CREATE CONTINUOUS QUERY cq_metrics_1d ON sewage_plant
+CREATE CONTINUOUS QUERY cq_metrics_1d ON sewage
 BEGIN
   SELECT mean(power_consumption) AS power_consumption, mean(carbon_usage) AS carbon_usage,
          mean(tn_removal_rate) AS tn_removal_rate, mean(tp_removal_rate) AS tp_removal_rate,
