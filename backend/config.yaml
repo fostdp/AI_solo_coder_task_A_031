@@ -7,117 +7,88 @@ influxdb:
   username: admin
   password: admin123
   database: sewage_plant
-  retention_policy: raw_data
-  timeout: 10s
+  retention_policy: one_year
+  precision: s
 
 mqtt:
   broker: tcp://localhost:1883
   client_id: sewage_server
   username: admin
-  password: admin123
-  topics:
-    sensor_data: sensor/+/data
-    plc_status: plc/+/status
-    control_command: control/command
+  password: public
+  topic_prefix: sewage/
+  qos: 1
 
 websocket:
-  port: 8081
-  path: /ws
+  read_buffer_size: 1024
+  write_buffer_size: 1024
+  ping_period: 54s
+  pong_wait: 60s
+  write_wait: 10s
 
-sensor_collector:
-  offline_timeout: 300s
-  max_deviation_ratio: 10.0
+collector:
+  validation_enabled: true
+  jump_detection_enabled: true
+  max_jump_percent: 50.0
+  offline_detection_enabled: true
+  offline_threshold_minutes: 10
+  channel_buffer_size: 1000
 
-control:
+controller:
   aeration:
-    target_nh3: 1.5
-    control_interval: 10s
-    zones:
-      - zone_id: aerobic1
-        do_setpoint: 2.0
-        do_min: 1.5
-        do_max: 2.5
-        nh3_setpoint: 1.5
-        nh3_min: 1.0
-        nh3_max: 2.0
-        min_air_flow: 500
-        max_air_flow: 5000
-      - zone_id: aerobic2
-        do_setpoint: 2.0
-        do_min: 1.5
-        do_max: 2.5
-        nh3_setpoint: 1.5
-        nh3_min: 1.0
-        nh3_max: 2.0
-        min_air_flow: 500
-        max_air_flow: 5000
-      - zone_id: aerobic3
-        do_setpoint: 2.0
-        do_min: 1.5
-        do_max: 2.5
-        nh3_setpoint: 1.5
-        nh3_min: 1.0
-        nh3_max: 2.0
-        min_air_flow: 500
-        max_air_flow: 5000
+    do_setpoint: 2.0
+    do_min: 1.5
+    do_max: 2.5
+    nh3_setpoint: 1.5
+    nh3_min: 1.0
+    nh3_max: 2.0
     pid:
-      kp: 0.8
-      ki: 0.3
-      kd: 0.1
-      integral_separation_threshold: 0.5
-      anti_windup_gain: 0.5
-    feedforward:
-      nh3_gain: 0.5
-      flow_gain: 0.3
-      nh3_base: 1.5
-      flow_base: 300000
+      kp: 0.6
+      ki: 0.15
+      kd: 0.05
+      integral_separation_percent: 20.0
+      output_min: 50.0
+      output_max: 500.0
+    feedforward_gain: 0.8
+    control_interval: 30
+    min_compute_interval: 5
+    event_driven: true
+    num_sections: 30
+    min_air_flow: 50.0
+    max_air_flow: 500.0
+    min_valve_open: 10.0
+    max_valve_open: 100.0
   carbon:
-    no3_setpoint: 10.0
-    tn_setpoint: 15.0
-    cod_n_ratio: 5.0
-    max_dosage: 50.0
-    min_dosage: 0.0
-    carbon_source_type: acetate
-    carbon_source_concentration: 500000.0
-    cod_change_threshold: 0.2
-    event_driven_enabled: true
-    target_tn_removal_rate: 80.0
-    max_carbon_per_ton: 0.5
-    efficiency_weight: 0.7
-    cost_weight: 0.3
-    control_interval: 10s
+    tn_removal_target: 0.85
+    cod_n_ratio: 4.5
+    dosing_max: 150
+    control_interval: 60
+    min_compute_interval: 300
+    cod_change_threshold_pct: 20.0
+    bioavailable_cod_ratio: 0.7
+    denitrification_eff: 0.85
+    naac_cod_equivalent: 0.58
 
-alert:
-  thresholds:
+alarm:
+  level1:
     nh3_threshold: 5.0
     tn_threshold: 15.0
-    duration: 1800s
-    offline_timeout: 300s
-    fan_fault_timeout: 60s
-  sms_fallback_enabled: true
-  sms_fallback_level: 1
-  buffer_max_size: 100
-  check_interval: 30s
+    duration_minutes: 30
+    check_interval: 60
+  level2:
+    fan_failure_check: true
+    sensor_offline_minutes: 10
   sms:
     enabled: true
-    api_url: https://sms.example.com/send
+    api_url: https://sms.example.com/api/send
     api_key: your_sms_api_key
     recipients:
       - "13800138000"
       - "13900139000"
 
-sensors:
-  do:
-    count: 28
-    locations:
-      - anaerobic
-      - anoxic
-      - aerobic1
-      - aerobic2
-      - aerobic3
-  nh3:
-    count: 18
-  no3:
-    count: 12
-  po4:
-    count: 10
+dtu:
+  report_interval_seconds: 120
+  sensors:
+    do: 30
+    nh3: 20
+    no3: 15
+    po4: 10

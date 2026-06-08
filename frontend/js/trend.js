@@ -1,4 +1,4 @@
-const SensorTrend = {
+const TrendChart = {
     canvas: null,
     ctx: null,
     metricsCanvas: null,
@@ -119,7 +119,7 @@ const SensorTrend = {
         const range = yMax - yMin;
 
         const lineGradient = ctx.createLinearGradient(padding.left, 0, padding.left + chartWidth, 0);
-        lineGradient.addColorStop(0, '#00d4ff');
+        lineGradient.addColorStop(0, '#00d4ff);
         lineGradient.addColorStop(1, '#00ff88');
 
         ctx.strokeStyle = lineGradient;
@@ -145,10 +145,10 @@ const SensorTrend = {
     },
 
     drawSetpointLine(ctx, sensorInfo, padding, chartHeight, yMin, yMax) {
-        if (!sensorInfo || sensorInfo.setpoint === undefined) return;
+        if (!sensorInfo || !sensorInfo.setpoint === undefined) return;
 
         const range = yMax - yMin;
-        const y = padding.top + chartHeight - ((sensorInfo.setpoint - yMin) / range) * chartHeight;
+        const y = padding.top + chartHeight - ((sensorInfo.setpoint - yMin) / range * chartHeight;
 
         ctx.strokeStyle = 'rgba(241, 196, 15, 0.7)';
         ctx.setLineDash([5, 5]);
@@ -241,7 +241,7 @@ const SensorTrend = {
 
         data.forEach((point, i) => {
             const x = padding.left + (chartWidth / (data.length - 1)) * i;
-            const y = padding.top + chartHeight - ((point.value - yMin) / yRange) * chartHeight;
+            const y = padding.top + chartHeight - ((point.value - yMin) / yRange * chartHeight;
             if (i === 0) {
                 ctx.moveTo(x, y);
             } else {
@@ -269,7 +269,7 @@ const SensorTrend = {
         const infoDiv = document.getElementById('trend-info');
 
         const sensorType = CONFIG.SENSOR_TYPES[sensor.type] || {};
-        title.textContent = `${sensorType.name || sensor.id} 近6小时趋势`;
+        title.textContent = `${sensorType.name || sensor.id} 近6小时趋势';
 
         const deviation = sensor.setpoint > 0
             ? Math.abs((sensor.value - sensor.setpoint) / sensor.setpoint * 100).toFixed(1)
